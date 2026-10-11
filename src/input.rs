@@ -2209,6 +2209,9 @@ pub fn encode_key_event(key: &KeyEvent) -> Option<Vec<u8>> {
             }
         }
         KeyCode::Backspace => b"\x08".to_vec(),
+        // M-Escape is the meta prefix plus Escape in tmux (input-keys.c), so
+        // Alt+Escape (a front end's `ESC ESC`, #766) keeps both bytes.
+        KeyCode::Esc if key.modifiers.contains(KeyModifiers::ALT) => b"\x1b\x1b".to_vec(),
         KeyCode::Esc => b"\x1b".to_vec(),
         // Arrow keys and special keys with xterm modifier encoding.
         // Format: \x1b[1;{mod}{letter} where mod = 1 + Shift*1 + Alt*2 + Ctrl*4
@@ -3798,6 +3801,25 @@ fn handle_copy_mode_char(app: &mut AppState, c: char) -> io::Result<()> {
     Ok(())
 }
 
+/// Whether a `send-key` name is Escape with the Meta modifier (`M-Escape`,
+/// `M-esc`, any case, Ctrl and Shift allowed alongside).  tmux has no legacy
+/// encoding for Ctrl or Shift on Escape, so with Meta present the key is
+/// `\033\033` whatever else is held (input-keys.c), and without Meta it is a
+/// plain Escape.
+pub(crate) fn is_meta_escape_name(name: &str) -> bool {
+    let mut rest = name;
+    let mut meta = false;
+    loop {
+        let lower = rest.get(..2).map(|s| s.to_ascii_lowercase());
+        match lower.as_deref() {
+            Some("m-") => { meta = true; rest = &rest[2..]; }
+            Some("c-") | Some("s-") => { rest = &rest[2..]; }
+            _ => break,
+        }
+    }
+    meta && (rest.eq_ignore_ascii_case("escape") || rest.eq_ignore_ascii_case("esc"))
+}
+
 pub fn send_key_to_active(app: &mut AppState, k: &str) -> io::Result<()> {
     // In clock mode, any key exits back to passthrough
     if matches!(app.mode, Mode::ClockMode) {
@@ -4122,6 +4144,10 @@ pub fn send_key_to_active(app: &mut AppState, k: &str) -> io::Result<()> {
             "backspace" => write_key_seq(p, b"\x7f"),
             "delete" => write_key_seq(p, b"\x1b[3~"),
             "esc" => write_key_seq(p, b"\x1b"),
+            // Alt+Escape, which is what a front end's `ESC ESC` becomes on
+            // the console input route (#766).  tmux writes M-Escape as the
+            // meta prefix plus Escape, `\033\033` (input-keys.c).
+            s if is_meta_escape_name(s) => write_key_seq(p, b"\x1b\x1b"),
             "up" => write_key_seq(p, b"\x1b[A"),
             "down" => write_key_seq(p, b"\x1b[B"),
             "right" => write_key_seq(p, b"\x1b[C"),
@@ -4394,6 +4420,10 @@ mod tests;
 #[cfg(test)]
 #[path = "../tests-rs/test_issue226_ctrl_slash.rs"]
 mod tests_issue226_ctrl_slash;
+
+#[cfg(test)]
+#[path = "../tests-rs/test_issue766_meta_escape.rs"]
+mod tests_issue766_meta_escape;
 
 #[cfg(test)]
 #[path = "../tests-rs/test_issue394_ctrl_slash_conpty.rs"]
