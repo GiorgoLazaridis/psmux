@@ -47,3 +47,17 @@ fn a_row_with_no_colon_is_named_whole() {
     assert_eq!(chooser_kill_target("  plain"), "plain");
     assert_eq!(chooser_kill_target(""), "");
 }
+
+#[test]
+fn the_session_question_names_the_session_as_typed_under_a_socket() {
+    // Under `-L ns` the session chooser's rows are registry bases spelled
+    // `ns__name`; tmux's "Kill session %s? " names `s->name`, the name the
+    // user gave, so the question must not show the prefix.
+    assert_eq!(chooser_kill_session_prompt("a779_x__ta", "a779_x__tb"), "kill-session tb");
+    assert_eq!(chooser_kill_session_prompt("a779_x__ta", "a779_x__ta"), "kill-session ta");
+}
+
+#[test]
+fn the_session_question_in_the_default_namespace_is_the_row_itself() {
+    assert_eq!(chooser_kill_session_prompt("work", "play"), "kill-session play");
+}

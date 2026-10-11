@@ -77,7 +77,7 @@ $treeNoKill = $treeArmText -and ($treeArmText -notmatch "kill-window\\n")
 Add-Result "tree x pushes no kill-window" $treeNoKill ""
 
 Write-Test "session chooser: 'x' sets the question instead of killing"
-$sessAsks = $src -match "KeyCode::Char\('x'\)\s+if\s+session_chooser\s*=>\s*\{(?:(?!=>)[\s\S])*?chooser_kill = Some\(ChooserKill \{(?:(?!\}\))[\s\S])*?kill-session"
+$sessAsks = $src -match "KeyCode::Char\('x'\)\s+if\s+session_chooser\s*=>\s*\{(?:(?!=>)[\s\S])*?chooser_kill = Some\(ChooserKill \{(?:(?!\}\))[\s\S])*?(?:kill-session|chooser_kill_session_prompt)"
 Add-Result "session x sets chooser_kill" $sessAsks ""
 
 Write-Test "the kill hangs off the answer, and only a yes runs it"

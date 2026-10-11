@@ -456,6 +456,15 @@ pub(crate) fn chooser_kill_target(label: &str) -> String {
     label.split(':').next().unwrap_or(label).trim().to_string()
 }
 
+/// The session chooser's kill question. Its rows are registry bases, which
+/// under `-L ns` carry the `ns__` prefix, so the question names the session
+/// the way the user typed it, as tmux's "Kill session %s? " names `s->name`
+/// (`window-tree.c:1498`), and not the prefixed file stem.
+pub(crate) fn chooser_kill_session_prompt(current_session: &str, row: &str) -> String {
+    let ns = crate::session::session_namespace(current_session);
+    format!("kill-session {}", crate::session::display_session_name(ns, row))
+}
+
 /// Classify every row of a choose-tree model so the tmux line rules in
 /// `crate::choose_tree` can be applied to it.
 pub(crate) fn tree_row_kinds(rows: &[TreeRow]) -> Vec<crate::choose_tree::RowKind> {
@@ -5523,7 +5532,7 @@ pub fn run_remote(terminal: &mut Terminal<crate::platform::PsmuxBackend>, input:
                                         .map(|(sname, _)| sname.clone());
                                     if let Some(sname) = sname {
                                         chooser_kill = Some(ChooserKill {
-                                            prompt: format!("kill-session {}", sname),
+                                            prompt: chooser_kill_session_prompt(&current_session, &sname),
                                             window: None,
                                             session: sname,
                                         });
