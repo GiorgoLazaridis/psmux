@@ -499,6 +499,20 @@ pub(crate) fn modified_key_name(base: &str, mods: KeyModifiers) -> String {
     }
 }
 
+/// The `send-key` name for an Escape key event (issue #766).
+///
+/// A front end that writes `ESC ESC` in one write reaches the client, on the
+/// console input route, as ONE Alt+Escape key record: conhost's input parser
+/// reads an ESC in front of another key as the Alt prefix, exactly as it turns
+/// `ESC a` into Alt+a.  Naming that "esc" threw the Alt away and the pane read
+/// a single ESC.  tmux reads the same bytes as M-Escape (tty-keys.c) and
+/// writes M-Escape to the pane as `\033\033` (input-keys.c, the meta prefix),
+/// so Alt is kept here and the server writes both bytes.  Ctrl and Shift have
+/// no encoding of their own on Escape, in tmux as here, so they stay "esc".
+pub(crate) fn escape_key_name(mods: KeyModifiers) -> &'static str {
+    if mods.contains(KeyModifiers::ALT) { "M-Escape" } else { "esc" }
+}
+
 /// Extract selected text from the layout tree given absolute terminal coordinates.
 /// Computes pane areas via the same Layout splitting render_json uses, then reads
 /// characters from the run-length-encoded rows_v2 data.
@@ -6292,7 +6306,7 @@ pub fn run_remote(terminal: &mut Terminal<crate::platform::PsmuxBackend>, input:
                                 // exactly as before.
                                 KeyCode::Backspace => { cmd_batch.push(format!("send-key {}\n", modified_key_name("Backspace", key.modifiers))); }
                                 KeyCode::Delete => { cmd_batch.push(format!("send-key {}\n", modified_key_name("Delete", key.modifiers))); }
-                                KeyCode::Esc => { cmd_batch.push("send-key esc\n".into()); }
+                                KeyCode::Esc => { cmd_batch.push(format!("send-key {}\n", escape_key_name(key.modifiers))); }
                                 KeyCode::Left => { cmd_batch.push(format!("send-key {}\n", modified_key_name("Left", key.modifiers))); }
                                 KeyCode::Right => { cmd_batch.push(format!("send-key {}\n", modified_key_name("Right", key.modifiers))); }
                                 KeyCode::Up => { cmd_batch.push(format!("send-key {}\n", modified_key_name("Up", key.modifiers))); }
