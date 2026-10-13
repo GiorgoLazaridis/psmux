@@ -274,9 +274,10 @@ jobs:
       - name: Generate changelog
         id: changelog
         run: |
-          # Find the previous tag
+          # Find the previous release tag. Tags with a hyphen (v3.4.0-signtest,
+          # v3.3.4-fix-273) are rehearsals or side tags, never a changelog base.
           CURRENT_TAG="${{ inputs.tag }}"
-          PREV_TAG=$(git tag --sort=-v:refname | grep -v "^${CURRENT_TAG}$" | head -n 1)
+          PREV_TAG=$(git tag --list 'v*' --sort=-v:refname | grep -v -- '-' | grep -vxF "$CURRENT_TAG" | head -n 1 || true)
 
           if [ -z "$PREV_TAG" ]; then
             echo "No previous tag found — generating changelog from all commits"
