@@ -65,6 +65,11 @@ InstallDir "$LOCALAPPDATA\psmux"
 InstallDirRegKey HKCU "Software\psmux" "InstallDir"
 RequestExecutionLevel user
 SetCompressor /SOLID lzma
+; The three binaries are near identical copies. LZMA can only reuse the
+; first one inside its dictionary, and the default 8 MB is smaller than the
+; x64 psmux.exe (9.45 MB at 3.3.8+), so all three were stored in full: 6.8 MB
+; instead of 2.6 MB. 32 MB covers them (about 32 MB RAM while unpacking).
+SetCompressorDictSize 32
 Unicode True
 
 ; ── Version info embedded in the .exe ────────────────────────────────────
