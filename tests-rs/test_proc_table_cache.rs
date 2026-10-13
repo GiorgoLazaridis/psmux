@@ -205,20 +205,30 @@ fn a_cold_cache_walks_inline() {
     // With nothing cached there is nothing to serve, so the caller must walk
     // rather than hand back an empty table and make every format expand to
     // nothing on the first frame.
+    //
+    // The cache is global, so a background refresh another test started can
+    // refill it between invalidate() and the call (CI saw 0 walks once): that
+    // call was warm, not cold. Retry until a call really starts cold. Every
+    // call, warm or cold, must hand back a full table.
     let _g = lock();
-    invalidate();
-    let before = walks();
-    let served = process_table(RENDER_PATH_TTL).expect("snapshot should succeed");
-    assert_eq!(
-        walks() - before,
-        1,
-        "a cold cache must be filled inline"
-    );
-    assert!(
-        served.len() > 10,
-        "the inline cold walk returned only {} entries",
-        served.len()
-    );
+    let mut cold_walked = false;
+    for _ in 0..20 {
+        invalidate();
+        let before = walks();
+        let served = process_table(RENDER_PATH_TTL).expect("snapshot should succeed");
+        let taken = walks() - before;
+        assert!(taken <= 1, "one lookup took {} walks", taken);
+        assert!(
+            served.len() > 10,
+            "a lookup after invalidate returned only {} entries",
+            served.len()
+        );
+        if taken == 1 {
+            cold_walked = true;
+            break;
+        }
+    }
+    assert!(cold_walked, "a cold cache must be filled inline");
 }
 
 #[test]
