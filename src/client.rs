@@ -334,16 +334,57 @@ fn extract_confirm_command(args: &str) -> String {
 /// prompt opens with (`-I`), the overlay heading (`-p`), and the command to run
 /// with `%%` replaced by whatever the user typed. A bare `command-prompt`
 /// leaves all three empty and the typed line is itself the command.
+///
+/// The same parse serves a prefix binding and `psmux command-prompt` run from
+/// the command line, which the server hands to the attached client (#789
+/// follow up), so the two cannot drift apart.
 #[derive(Debug, Default, PartialEq, Eq)]
-struct CommandPromptSpec {
-    initial: String,
-    label: Option<String>,
-    template: Option<String>,
+pub(crate) struct CommandPromptSpec {
+    pub(crate) initial: String,
+    pub(crate) label: Option<String>,
+    pub(crate) template: Option<String>,
     /// `-k`: the next key answers the prompt with its NAME
     /// (PROMPT_KEY, status.c:1438).
-    key: bool,
+    pub(crate) key: bool,
     /// `-1`: the next character answers the prompt (PROMPT_SINGLE).
-    single: bool,
+    pub(crate) single: bool,
+    /// `-N`: only digits are typed; any other key answers the prompt and is
+    /// then handled as the key it is (PROMPT_NUMERIC, status.c:1449).
+    pub(crate) numeric: bool,
+    /// `-T search`: Up and Down walk the search history, not the command
+    /// history (tmux keeps one history per prompt type).
+    pub(crate) search: bool,
+    /// `-T` as given, for the server's check of the type name.
+    pub(crate) prompt_type: Option<String>,
+    /// `-F`: the template is expanded as a format before it is used.
+    pub(crate) format: bool,
+    /// `-b`: the command line that asked for the prompt does not wait for it.
+    pub(crate) background: bool,
+    /// `-l`: the labels are one literal string, not split on commas.
+    pub(crate) literal: bool,
+    /// `-t`: the client the prompt opens on.
+    pub(crate) target: Option<String>,
+}
+
+impl CommandPromptSpec {
+    /// One `(label, initial text)` per prompt: `-p a,b` asks twice, and `-I`
+    /// splits the same way (cmd-command-prompt.c:131 to :154).
+    pub(crate) fn prompts(&self) -> Vec<(Option<String>, String)> {
+        let labels: Vec<Option<String>> = match &self.label {
+            Some(l) if !self.literal => l.split(',').map(|s| Some(s.to_string())).collect(),
+            other => vec![other.clone()],
+        };
+        let inputs: Vec<String> = if self.literal {
+            vec![self.initial.clone()]
+        } else {
+            self.initial.split(',').map(str::to_string).collect()
+        };
+        labels
+            .into_iter()
+            .enumerate()
+            .map(|(n, l)| (l, inputs.get(n).cloned().unwrap_or_default()))
+            .collect()
+    }
 }
 
 /// Parse the arguments of a `command-prompt` binding — everything after the
@@ -360,7 +401,20 @@ struct CommandPromptSpec {
 /// template stays in the template), `--` ends them explicitly, a value glued to
 /// its flag (`-pindex`) satisfies it on its own, and one token can carry
 /// several flags.
-fn parse_command_prompt_args(args: &str) -> CommandPromptSpec {
+/// The text inside the `{ ... }` block that ends `args`: from the first `{`
+/// standing as a word of its own to the last `}`, trimmed.
+fn brace_block_body(args: &str) -> Option<String> {
+    let close = args.rfind('}')?;
+    let bytes = args.as_bytes();
+    let open = args.char_indices().find(|&(at, c)| {
+        c == '{'
+            && (at == 0 || bytes[at - 1].is_ascii_whitespace())
+            && bytes.get(at + 1).is_none_or(|b| b.is_ascii_whitespace())
+    })?.0;
+    (open < close).then(|| args[open + 1..close].trim().to_string())
+}
+
+pub(crate) fn parse_command_prompt_args(args: &str) -> CommandPromptSpec {
     let tokens = crate::config::shell_words(args);
     let mut spec = CommandPromptSpec::default();
     let mut i = 0;
@@ -387,6 +441,10 @@ fn parse_command_prompt_args(args: &str) -> CommandPromptSpec {
                 match flag {
                     'k' => spec.key = true,
                     '1' => spec.single = true,
+                    'N' => spec.numeric = true,
+                    'F' => spec.format = true,
+                    'b' => spec.background = true,
+                    'l' => spec.literal = true,
                     _ => {}
                 }
                 continue;
@@ -401,9 +459,14 @@ fn parse_command_prompt_args(args: &str) -> CommandPromptSpec {
             match flag {
                 'I' => spec.initial = value.unwrap_or_default(),
                 'p' => spec.label = value,
-                // -t (target) and -T (prompt type) are consumed and dropped:
-                // psmux has no per-client prompt routing and no prompt-type
+                // -T: the prompt type. Only `search` changes anything here,
+                // which history Up and Down walk; psmux has no prompt type
                 // completion.
+                'T' => {
+                    spec.search = value.as_deref() == Some("search");
+                    spec.prompt_type = value;
+                }
+                't' => spec.target = value,
                 _ => {}
             }
             break;
@@ -411,7 +474,16 @@ fn parse_command_prompt_args(args: &str) -> CommandPromptSpec {
         i += 1;
     }
     if i < tokens.len() {
-        let template = tokens[i..].join(" ");
+        // A `{ ... }` block is the template as written, quotes included: tmux's
+        // own bindings are written that way (`command-prompt -p '(goto line)'
+        // { send -X goto-line -- '%%' }`), and the tokens above have had
+        // their quotes taken off, so joining them ran `{ rename-window a b }`
+        // for `{ rename-window "%%" }`. The block is cut from the raw text,
+        // as the copy mode prompt's parser does (#789 follow up).
+        let block = (tokens[i] == "{" && tokens.last().map(String::as_str) == Some("}"))
+            .then(|| brace_block_body(args))
+            .flatten();
+        let template = block.unwrap_or_else(|| tokens[i..].join(" "));
         if spec.label.is_none() {
             // With no -p, tmux's prompt names the command it is about to run.
             // cmd-command-prompt.c:113 asks for that name and wraps it:
@@ -3143,8 +3215,51 @@ pub fn run_remote(terminal: &mut Terminal<crate::platform::PsmuxBackend>, input:
     // prompt on its own (status.c:1438 to :1470). Set on every open.
     let mut command_key_answer = false;
     let mut command_single = false;
+    // `-N`: digits only, any other key answers and then acts as itself.
+    let mut command_numeric = false;
+    // `-T search`: this prompt walks `search_history`, not `command_history`.
+    let mut command_search = false;
+    let mut search_history: Vec<String> = Vec::new();
+    // `-p a,b`: the prompts still to ask, and the answers given so far
+    // (cmd_command_prompt_callback, cmd-command-prompt.c:180).
+    let mut command_prompt_queue: Vec<(Option<String>, String)> = Vec::new();
+    let mut command_answers: Vec<String> = Vec::new();
+    // A prompt the server asked for (`psmux command-prompt`, a hook): its
+    // request id, reported back with `prompt-done <id>` once it closes, so
+    // a waiting command line returns (#789 follow up).
+    let mut command_request_id: Option<u64> = None;
+    let mut last_prompt_request_id: u64 = 0;
+    let mut prompt_done_pending: Vec<u64> = Vec::new();
+    // The server has a prompt open (a copy mode prompt): its frame carries the
+    // prompt's cursor. Every key goes to that prompt, the prefix key included.
+    let mut srv_prompt_open = false;
     // Custom prompt label from command-prompt -p 'prompt:'
     let mut command_prompt_label: Option<String> = None;
+    // Open the command prompt: the one place a prefix binding's prompt and a
+    // prompt the server asked for (#789 follow up) are set up, so the two
+    // behave the same. `$prompts` is one `(label, initial text)` per prompt.
+    macro_rules! open_command_prompt {
+        ($prompts:expr, $template:expr, $key:expr, $single:expr, $numeric:expr, $search:expr) => {{
+            let mut prompts: Vec<(Option<String>, String)> = $prompts;
+            let (label, initial) = if prompts.is_empty() { (None, String::new()) } else { prompts.remove(0) };
+            let single: bool = $single;
+            let numeric: bool = !single && $numeric;
+            let key: bool = !single && !numeric && $key;
+            let search: bool = $search;
+            command_input = true;
+            command_buf = initial;
+            command_back = 0;
+            command_prompt_label = label;
+            command_prompt_queue = prompts;
+            command_answers = Vec::new();
+            command_template = $template;
+            command_key_answer = key;
+            command_single = single;
+            command_numeric = numeric;
+            command_search = search;
+            command_history_idx = if search { search_history.len() } else { command_history.len() };
+        }};
+    }
     // Track active window name from last dump-state for #W expansion
     let mut active_window_name = String::new();
     let mut window_idx_input = false;
@@ -3728,6 +3843,10 @@ pub fn run_remote(terminal: &mut Terminal<crate::platform::PsmuxBackend>, input:
         confirm_active: bool,
         #[serde(default)]
         confirm_prompt: Option<String>,
+        /// A command prompt the server asks one client to open (#789 follow
+        /// up): `psmux command-prompt`, or one a hook ran.
+        #[serde(default)]
+        prompt_request: Option<crate::types::PromptRequest>,
         /// Menu overlay active
         #[serde(default)]
         menu_active: bool,
@@ -4228,6 +4347,9 @@ pub fn run_remote(terminal: &mut Terminal<crate::platform::PsmuxBackend>, input:
             if crate::pty_trace::on() && matches!(_pending_evt, Some(Event::Key(_))) {
                 crate::pty_trace::mark_plain("k", poll_ms as usize);
             }
+            // A key a `command-prompt -N` answered goes round again, so it is
+            // handled as the key it is once the prompt is closed (status.c:1456).
+            let mut redispatch_evt: Option<Event> = None;
             while let Some(_cur_evt) = _pending_evt {
                 // Input debug: log every raw event BEFORE filtering
                 if input_log_enabled() {
@@ -4676,7 +4798,7 @@ pub fn run_remote(terminal: &mut Terminal<crate::platform::PsmuxBackend>, input:
                         // A `-k` prompt is answered by Escape like any other
                         // key ("Escape", status.c:1438), so it is left to the
                         // prompt's own arm.
-                        else if matches!(key.code, KeyCode::Esc) && ((command_input && !command_key_answer) || renaming || pane_renaming || tree_chooser || buffer_chooser || session_chooser || confirm_cmd.is_some() || keys_viewer) {
+                        else if matches!(key.code, KeyCode::Esc) && ((command_input && !command_key_answer && !command_numeric) || renaming || pane_renaming || tree_chooser || buffer_chooser || session_chooser || confirm_cmd.is_some() || keys_viewer) {
                             if chooser_kill.is_some() {
                                 // Escape answers a chooser's kill question with
                                 // "no" and leaves the chooser open, which is
@@ -4746,7 +4868,12 @@ pub fn run_remote(terminal: &mut Terminal<crate::platform::PsmuxBackend>, input:
                         // with an editor are excluded here; the pane title and
                         // window index prompts and the choosers keep what they
                         // had.
-                        else if is_prefix && !prefix_armed && !command_input && !renaming {
+                        // A prompt the SERVER has open (a copy mode prompt) takes
+                        // it too: the client sees that prompt only as a status
+                        // line with a cursor, and used to arm the prefix on C-b,
+                        // which is cursor left there and the answer at a -k
+                        // prompt (#789 follow up).
+                        else if is_prefix && !prefix_armed && !command_input && !renaming && !srv_prompt_open {
                             // Suppress IME while in prefix mode so command keys
                             // are not intercepted by the input method (issue #286).
                             #[cfg(windows)]
@@ -4775,7 +4902,7 @@ pub fn run_remote(terminal: &mut Terminal<crate::platform::PsmuxBackend>, input:
                         // A pending `switch-client -T` latch is checked before
                         // the root table, so `key_table_latch.is_none()` gates
                         // this arm and lets the dispatch arm below run instead.
-                        else if !prefix_armed && key_table_latch.is_none() && !command_input && !renaming && !pane_renaming && !tree_chooser && !buffer_chooser && !session_chooser && !keys_viewer && confirm_cmd.is_none() && {
+                        else if !prefix_armed && key_table_latch.is_none() && !command_input && !renaming && !srv_prompt_open && !pane_renaming && !tree_chooser && !buffer_chooser && !session_chooser && !keys_viewer && confirm_cmd.is_none() && {
                             let key_tuple = normalize_key_for_binding((key.code, key.modifiers));
                             synced_bindings.iter().any(|b| {
                                 b.t == key_table_sync.default_table() && parse_key_string(&b.k).map_or(false, |k| normalize_key_for_binding(k) == key_tuple)
@@ -4903,25 +5030,24 @@ pub fn run_remote(terminal: &mut Terminal<crate::platform::PsmuxBackend>, input:
                                         port, &session_key, "#{session_name}", &session_label);
                                     rename_back = 0;
                                 } else if cmd == "command-prompt" || cmd.starts_with("command-prompt ") {
-                                    command_input = true;
-                                    command_history_idx = command_history.len();
                                     let spec = parse_command_prompt_args(
                                         cmd.strip_prefix("command-prompt")
                                             .unwrap_or("")
                                             .trim_start(),
                                     );
                                     // Expand format variables in initial text
-                                    command_buf = spec
-                                        .initial
-                                        .replace("#W", &active_window_name)
-                                        .replace("#{window_name}", &active_window_name)
-                                        .replace("#S", &session_label)
-                                        .replace("#{session_name}", &session_label);
-                                    command_back = 0;
-                                    command_template = spec.template;
-                                    command_prompt_label = spec.label;
-                                    command_key_answer = spec.key;
-                                    command_single = spec.single;
+                                    let prompts: Vec<(Option<String>, String)> = spec
+                                        .prompts()
+                                        .into_iter()
+                                        .map(|(label, initial)| {
+                                            (label, initial
+                                                .replace("#W", &active_window_name)
+                                                .replace("#{window_name}", &active_window_name)
+                                                .replace("#S", &session_label)
+                                                .replace("#{session_name}", &session_label))
+                                        })
+                                        .collect();
+                                    open_command_prompt!(prompts, spec.template, spec.key, spec.single, spec.numeric, spec.search);
                                 } else if cmd == "list-keys" {
                                     keys_viewer_scroll = 0;
                                     let user_binds: Vec<(bool, String, String, String)> = synced_bindings
@@ -5983,10 +6109,25 @@ pub fn run_remote(terminal: &mut Terminal<crate::platform::PsmuxBackend>, input:
                                 // Both used to be dropped by the flag parser, so
                                 // the prompt waited for Enter and ran with
                                 // whatever had been typed.
-                                _ if command_input && (command_key_answer || command_single) => {
+                                // `-N`: a digit is typed (status.c:1450); any
+                                // other key answers with the digits so far and
+                                // is then handled as the key it is, which tmux
+                                // does by returning 1 from status_prompt_key
+                                // (status.c:1456), so the key is re-dispatched.
+                                KeyCode::Char(c) if command_input && command_numeric
+                                    && c.is_ascii_digit()
+                                    && !key.modifiers.contains(KeyModifiers::CONTROL)
+                                    && !key.modifiers.contains(KeyModifiers::ALT) => {
+                                    command_buf.push(c);
+                                    command_back = 0;
+                                }
+                                _ if command_input && (command_key_answer || command_single || command_numeric) => {
                                     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
                                     let answer: Option<String> = if command_key_answer {
                                         Some(prompt_key_answer_name(key.code, key.modifiers))
+                                    } else if command_numeric {
+                                        redispatch_evt = Some(Event::Key(key));
+                                        Some(command_buf.clone())
                                     } else {
                                         match key.code {
                                             KeyCode::Char(c) if !ctrl || is_altgr_char(c, key.modifiers) => Some(c.to_string()),
@@ -5994,12 +6135,16 @@ pub fn run_remote(terminal: &mut Terminal<crate::platform::PsmuxBackend>, input:
                                             _ => None,
                                         }
                                     };
-                                    let cancel = !command_key_answer
+                                    let cancel = command_single
                                         && (key.code == KeyCode::Esc
                                             || (ctrl && matches!(key.code, KeyCode::Char('c') | KeyCode::Char('g'))));
                                     if let Some(answer) = answer.as_ref() {
                                         let final_cmd = match command_template {
-                                            Some(ref tmpl) => tmpl.replace("%%", answer),
+                                            Some(ref tmpl) => {
+                                                let mut answers = std::mem::take(&mut command_answers);
+                                                answers.push(answer.clone());
+                                                crate::copy_prompt::final_command_tmux(Some(tmpl), &answers)
+                                            }
                                             None => answer.clone(),
                                         };
                                         let sub_cmds = crate::config::split_chained_commands_pub(&final_cmd);
@@ -6012,6 +6157,9 @@ pub fn run_remote(terminal: &mut Terminal<crate::platform::PsmuxBackend>, input:
                                         command_prompt_label = None;
                                         command_key_answer = false;
                                         command_single = false;
+                                        command_numeric = false;
+                                        command_prompt_queue.clear();
+                                        command_answers.clear();
                                         selection_changed = true;
                                     }
                                 }
@@ -6085,17 +6233,42 @@ pub fn run_remote(terminal: &mut Terminal<crate::platform::PsmuxBackend>, input:
                                     }
                                     window_idx_input = false;
                                 }
+                                // `-p a,b`: Enter answers this prompt and asks
+                                // the next one (cmd_command_prompt_callback,
+                                // cmd-command-prompt.c:180 to :205); the
+                                // command runs after the last.
+                                KeyCode::Enter if command_input && !command_prompt_queue.is_empty() => {
+                                    let typed = command_buf.trim().to_string();
+                                    if !typed.is_empty() {
+                                        let hist = if command_search { &mut search_history } else { &mut command_history };
+                                        hist.push(typed.clone());
+                                    }
+                                    command_answers.push(typed);
+                                    let (label, initial) = command_prompt_queue.remove(0);
+                                    command_prompt_label = label;
+                                    command_buf = initial;
+                                    command_back = 0;
+                                    command_history_idx = if command_search { search_history.len() } else { command_history.len() };
+                                    selection_changed = true;
+                                }
                                 KeyCode::Enter if command_input => {
                                     let trimmed = command_buf.trim().to_string();
                                     if !trimmed.is_empty() || command_template.is_some() {
                                         if !trimmed.is_empty() {
-                                            command_history.push(trimmed.clone());
-                                            command_history_idx = command_history.len();
+                                            // tmux keeps one history per prompt
+                                            // type (status.c:1666).
+                                            let hist = if command_search { &mut search_history } else { &mut command_history };
+                                            hist.push(trimmed.clone());
+                                            command_history_idx = hist.len();
                                         }
                                         // If we have a template (from command-prompt -I ... 'cmd "%%"'),
-                                        // substitute %% with user input and send that command instead.
+                                        // put every answer in, the way tmux does: %% and %1
+                                        // for the first, %2 for the second, %%% and %1% the
+                                        // double quoted spellings (cmd_template_replace).
                                         let final_cmd = if let Some(ref tmpl) = command_template {
-                                            tmpl.replace("%%", &trimmed)
+                                            let mut answers = std::mem::take(&mut command_answers);
+                                            answers.push(trimmed.clone());
+                                            crate::copy_prompt::final_command_tmux(Some(tmpl), &answers)
                                         } else {
                                             trimmed.clone()
                                         };
@@ -6224,17 +6397,19 @@ pub fn run_remote(terminal: &mut Terminal<crate::platform::PsmuxBackend>, input:
                                             selection_changed = true;
                                         }
                                         PromptKeyAction::HistoryUp => {
+                                            let hist = if command_search { &search_history } else { &command_history };
                                             if command_history_idx > 0 {
                                                 command_history_idx -= 1;
-                                                command_buf = command_history[command_history_idx].clone();
+                                                command_buf = hist[command_history_idx].clone();
                                                 command_back = 0;
                                             }
                                         }
                                         PromptKeyAction::HistoryDown => {
-                                            if command_history_idx < command_history.len() {
+                                            let hist = if command_search { &search_history } else { &command_history };
+                                            if command_history_idx < hist.len() {
                                                 command_history_idx += 1;
-                                                command_buf = if command_history_idx < command_history.len() {
-                                                    command_history[command_history_idx].clone()
+                                                command_buf = if command_history_idx < hist.len() {
+                                                    hist[command_history_idx].clone()
                                                 } else {
                                                     String::new()
                                                 };
@@ -7382,7 +7557,10 @@ pub fn run_remote(terminal: &mut Terminal<crate::platform::PsmuxBackend>, input:
                     _ => {}
                 }
                 if quit { break; }
-                _pending_evt = input.try_read()?;
+                _pending_evt = match redispatch_evt.take() {
+                    Some(evt) => Some(evt),
+                    None => input.try_read()?,
+                };
             }
         }
         if quit { break; }
@@ -7630,6 +7808,18 @@ pub fn run_remote(terminal: &mut Terminal<crate::platform::PsmuxBackend>, input:
             }
         }
 
+        // A prompt the server asked for has closed (answered or cancelled,
+        // whichever arm closed it): say so after the command it ran, so a
+        // waiting `psmux command-prompt` returns once that command has run
+        // (#789 follow up).
+        if !command_input {
+            if let Some(id) = command_request_id.take() {
+                prompt_done_pending.push(id);
+            }
+        }
+        for id in prompt_done_pending.drain(..) {
+            cmd_batch.push(format!("prompt-done {}\n", id));
+        }
         // Send all batched commands immediately — keys reach the server
         // without waiting for a dump-state round-trip
         let sent_keys_this_iter = !cmd_batch.is_empty();
@@ -7805,6 +7995,27 @@ pub fn run_remote(terminal: &mut Terminal<crate::platform::PsmuxBackend>, input:
         };
         srv_confirm_active = state.confirm_active;
         srv_confirm_prompt = state.confirm_prompt.unwrap_or_default();
+        // A prompt the server asked THIS client to open (by process id; 0 is
+        // any client). Each id opens once, though it rides in every frame
+        // until the prompt closes. A client that already has a prompt or an
+        // overlay up drops it, as tmux drops a prompt for a client that has
+        // one (cmd-command-prompt.c:93), and says so at once so a waiting
+        // command line is not left hanging.
+        srv_prompt_open = state.status_cursor.is_some();
+        if let Some(req) = state.prompt_request {
+            if req.id > last_prompt_request_id && (req.pid == 0 || req.pid == std::process::id()) {
+                last_prompt_request_id = req.id;
+                let busy = command_input || renaming || pane_renaming || window_idx_input
+                    || tree_chooser || buffer_chooser || session_chooser || keys_viewer
+                    || confirm_cmd.is_some();
+                if busy {
+                    prompt_done_pending.push(req.id);
+                } else {
+                    open_command_prompt!(req.prompts, req.template, req.key, req.single, req.numeric, req.search);
+                    command_request_id = Some(req.id);
+                }
+            }
+        }
         srv_menu_active = state.menu_active;
         srv_menu_title = state.menu_title.unwrap_or_default();
         srv_menu_selected = state.menu_selected;

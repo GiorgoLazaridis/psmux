@@ -66,3 +66,32 @@ fn a_k_prompt_names_keys_the_way_tmux_does() {
         assert_eq!(prompt_key_answer_name(*code, *mods), *want, "{code:?} {mods:?}");
     }
 }
+
+
+#[test]
+fn a_brace_block_template_keeps_its_quotes() {
+    // tmux's own bindings are written with a block (key-bindings.c), and the
+    // block is the template as written: `"%%"` keeps a typed space in one
+    // argument, where the joined tokens ran `{ rename-window a b }`.
+    let s = spec_of("-p br { rename-window \"%%\" }");
+    assert_eq!(s.template.as_deref(), Some("rename-window \"%%\""));
+    assert_eq!(s.label.as_deref(), Some("br"));
+    let s = spec_of("-kpkey { list-keys -1N '%%' }");
+    assert!(s.key);
+    assert_eq!(s.template.as_deref(), Some("list-keys -1N '%%'"));
+    // With no -p the label names the block's command.
+    let s = spec_of("{ send -X goto-line -- '%%' }");
+    assert_eq!(s.label.as_deref(), Some("(send)"));
+    // A key named `{` is not a block, and a flag value with braces is left alone.
+    let s = spec_of("-p '{x}' \"rename-window %%\"");
+    assert_eq!(s.template.as_deref(), Some("rename-window %%"));
+    assert_eq!(s.label.as_deref(), Some("{x}"));
+}
+
+#[test]
+fn every_new_flag_is_read() {
+    let s = spec_of("-N -F -b -l -T search -t /dev/pts/3 -p a,b -I x,y \"rename-window %1-%2\"");
+    assert!(s.numeric && s.format && s.background && s.literal && s.search);
+    assert_eq!(s.target.as_deref(), Some("/dev/pts/3"));
+    assert_eq!(s.prompts(), vec![(Some("a,b".into()), "x,y".into())]);
+}

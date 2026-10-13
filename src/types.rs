@@ -135,6 +135,29 @@ pub struct ClientInfo {
     pub focused: bool,
 }
 
+/// A `command-prompt` the server asks one attached client to open (#789 follow
+/// up). The command line that ran `psmux command-prompt` has no prompt of its
+/// own, so, as in tmux (status_prompt_set on the target client), the prompt
+/// opens on an attached client and runs there exactly as a prefix binding's
+/// does. It travels in the state frame as `prompt_request`.
+#[derive(Clone, Debug, Default, PartialEq, serde::Deserialize, serde::Serialize)]
+pub struct PromptRequest {
+    pub id: u64,
+    /// The target client's process id. 0 when the server does not know it,
+    /// and then any attached client takes the request.
+    pub pid: u32,
+    /// The target client's connection id; the server's own bookkeeping.
+    #[serde(skip)]
+    pub client_id: u64,
+    /// One `(label, initial text)` per prompt, formats already expanded.
+    pub prompts: Vec<(Option<String>, String)>,
+    pub template: Option<String>,
+    pub key: bool,
+    pub single: bool,
+    pub numeric: bool,
+    pub search: bool,
+}
+
 /// The synthetic tty a client is listed under (`#{client_name}`): its process
 /// id when known, else its connection id (issue #724).
 pub fn client_tty_name(cid: u64, pid: Option<u32>) -> String {
@@ -1683,6 +1706,15 @@ pub struct AppState {
     pub latest_size_client_id: Option<u64>,
     /// Client registry: all active PERSISTENT and CONTROL clients.
     pub client_registry: std::collections::HashMap<u64, ClientInfo>,
+    /// A `command-prompt` run from the command line, waiting for the client it
+    /// targets to open it (#789 follow up). It rides in every state frame until
+    /// that client reports the prompt closed with `prompt-done <id>`.
+    pub prompt_request: Option<PromptRequest>,
+    /// The id the next prompt request gets.
+    pub prompt_request_seq: u64,
+    /// The command lines waiting for their prompt (no `-b`), by request id:
+    /// each gets its reply when the prompt closes, as tmux's client waits.
+    pub prompt_waiters: Vec<(u64, std::sync::mpsc::Sender<String>)>,
     pub created_at: chrono::DateTime<Local>,
     pub next_win_id: usize,
     pub next_pane_id: usize,
@@ -2176,6 +2208,22 @@ impl AppState {
         true
     }
 
+    /// A prompt request is over (answered, cancelled, or its client is gone):
+    /// forget it and release the command line waiting for it, if any.
+    pub fn finish_prompt_request(&mut self, id: u64) {
+        if self.prompt_request.as_ref().is_some_and(|r| r.id == id) {
+            self.prompt_request = None;
+        }
+        self.prompt_waiters.retain(|(wid, tx)| {
+            if *wid == id {
+                let _ = tx.send(String::new());
+                false
+            } else {
+                true
+            }
+        });
+    }
+
     /// Reap a dead client's `client_registry` entry exactly once, keeping the
     /// `attached_clients` counter in lock-step with the registry.
     ///
@@ -2188,6 +2236,13 @@ impl AppState {
     /// `ClientAttach` incrementing and inserting together).
     pub fn reap_client(&mut self, cid: u64) -> bool {
         self.client_sizes.remove(&cid);
+        // A prompt request for a client that is gone can never be answered:
+        // drop it and let the command line waiting on it go.
+        if self.prompt_request.as_ref().is_some_and(|r| r.client_id == cid) {
+            if let Some(req) = self.prompt_request.take() {
+                self.finish_prompt_request(req.id);
+            }
+        }
         if self.client_registry.remove(&cid).is_some() {
             self.attached_clients = self.attached_clients.saturating_sub(1);
             self.client_prefix_active = false;
@@ -2794,6 +2849,9 @@ impl AppState {
             latest_client_id: None,
             latest_size_client_id: None,
             client_registry: std::collections::HashMap::new(),
+            prompt_request: None,
+            prompt_request_seq: 0,
+            prompt_waiters: Vec::new(),
             created_at: Local::now(),
             next_win_id: 1,
             next_pane_id: 1,
@@ -3838,7 +3896,12 @@ pub enum CtrlReq {
     RespawnWindow(Option<String>, Option<String>, mpsc::Sender<Result<(), String>>, Vec<(String, String)>),
     FocusIn,
     FocusOut,
-    CommandPrompt(String),
+    /// `command-prompt <args>` from the command line (#789 follow up): open
+    /// it on an attached client. The bool is "wait": the reply then comes
+    /// only when the prompt closes. An error is replied as `ERROR: <msg>`.
+    CommandPrompt(String, bool, mpsc::Sender<String>),
+    /// A client reports that the prompt of request `<id>` closed.
+    PromptDone(u64),
     ShowMessages(mpsc::Sender<String>),
     /// The warnings THIS server recorded while loading its config, framed by
     /// `server::config_warnings_reply`. Answered by the main loop, so it is

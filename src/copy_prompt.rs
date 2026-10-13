@@ -206,6 +206,28 @@ pub fn parse_args(args: &str) -> PromptArgs {
 /// only inside single quotes; written unconditionally it turned `it's` into
 /// `it"'s` for an unquoted or double quoted `%%`.
 pub fn template_replace(template: &str, s: &str, idx: usize) -> String {
+    replace_placeholder(template, s, idx, true)
+}
+
+/// [`template_replace`] exactly as tmux does it, without the copy mode
+/// prompt's single quote escape: a typed `'` inside `'%%'` ends the quoted
+/// argument as it does in tmux. The client's command prompt uses this (#789
+/// follow up), so a prefix binding and `psmux command-prompt` give the names
+/// tmux gives.
+pub fn template_replace_tmux(template: &str, s: &str, idx: usize) -> String {
+    replace_placeholder(template, s, idx, false)
+}
+
+/// [`final_command`] with [`template_replace_tmux`].
+pub fn final_command_tmux(template: Option<&str>, answers: &[String]) -> String {
+    let mut cmd = template.unwrap_or("%1").to_string();
+    for (n, a) in answers.iter().enumerate() {
+        cmd = template_replace_tmux(&cmd, a, n + 1);
+    }
+    cmd
+}
+
+fn replace_placeholder(template: &str, s: &str, idx: usize, escape_single: bool) -> String {
     #[derive(PartialEq)]
     enum Q { None, Single, Double }
     if !template.contains('%') {
@@ -241,7 +263,7 @@ pub fn template_replace(template: &str, s: &str, idx: usize) -> String {
             continue;
         }
         let next = chars.get(i).copied();
-        let plain = if in_single { Q::Single } else { Q::None };
+        let plain = if in_single && escape_single { Q::Single } else { Q::None };
         let quote;
         if next.map_or(false, |d| ('1'..='9').contains(&d) && (d as usize - '0' as usize) == idx) {
             i += 1;

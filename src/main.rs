@@ -1262,8 +1262,10 @@ fn run_main() -> io::Result<()> {
     // hijack the current session. See issue #485.
     let command_index = process_command_index(&args);
     let target_position = command_index.and_then(|index| process_target_position(&args, index));
+    // command-prompt's -t names a client (cmd-command-prompt.c:84) and its own
+    // arm routes and forwards it, so it stays on the line (#789 follow up).
     let strip_target_position = command_index
-        .filter(|index| !matches!(args[*index].as_str(), "detach-client" | "detach"))
+        .filter(|index| !matches!(args[*index].as_str(), "detach-client" | "detach" | "command-prompt"))
         .and(target_position);
     let is_set_option_command = command_index
         .and_then(|index| args.get(index))
@@ -1348,7 +1350,12 @@ fn run_main() -> io::Result<()> {
             // `detach-client -t /dev/pts/3` route as session '/dev/pts/3' and
             // fail with "no session" (issue #565). Route it like switch-client:
             // fall through to -s / $TMUX resolution.
-            let is_detach_client = args.iter().any(|a| a == "detach-client" || a == "detach");
+            let is_detach_client = args.iter().any(|a| a == "detach-client" || a == "detach")
+                // A command-prompt -t that is a client name (a tty, or %N)
+                // routes the same way; its arm finds that client's session.
+                || (command_index.is_some_and(|i| args[i] == "command-prompt")
+                    && (target.starts_with('/')
+                        || target.strip_prefix('%').is_some_and(|n| !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()))));
             if has_explicit_session && !is_switch_client && !is_detach_client {
                 // tmux matches a session name exactly and case-sensitively
                 // (`session_find` is a strcmp, and the prefix and fnmatch
@@ -5352,43 +5359,48 @@ fn run_main() -> io::Result<()> {
             }
             // command-prompt - Open interactive command prompt
             "command-prompt" => {
-                let mut cmd = "command-prompt".to_string();
-                let mut i = 1;
-                while i < cmd_args.len() {
-                    match cmd_args[i].as_str() {
-                        "-I" => {
-                            if let Some(t) = cmd_args.get(i + 1) {
-                                cmd.push_str(&format!(" -I {}", t));
-                                i += 1;
+                // The prompt opens on an attached client, which runs it as it
+                // runs a prefix binding's (#789 follow up). Every argument goes
+                // to the server as given: this arm used to rebuild the line
+                // from -I, -p, -1, -N, -T and -t alone, so the template, -k,
+                // -F and -b never arrived.
+                let rest: Vec<&str> = cmd_args[1..].iter().map(|s| s.as_str()).collect();
+                let spec = crate::client::parse_command_prompt_args(
+                    &rest.iter().map(|a| crate::util::quote_arg_if_needed(a)).collect::<Vec<_>>().join(" "),
+                );
+                // `-t` names a CLIENT (cmd-command-prompt.c:84). A tty name
+                // routes to the session that client is attached to, as
+                // detach-client's does; anything else was routed as a session.
+                if let Some(t) = spec.target.as_deref() {
+                    let wanted = match t.strip_prefix('%') {
+                        Some(n) if !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()) => format!("/dev/pts/{}", n),
+                        _ => t.to_string(),
+                    };
+                    if wanted.starts_with('/') {
+                        match session_holding_client(l_socket_name.as_deref(), &wanted) {
+                            Some(sess) => env::set_var("PSMUX_TARGET_SESSION", &sess),
+                            None => {
+                                eprintln!("psmux: can't find client: {}", t);
+                                std::process::exit(1);
                             }
                         }
-                        "-p" => {
-                            if let Some(t) = cmd_args.get(i + 1) {
-                                cmd.push_str(&format!(" -p {}", t));
-                                i += 1;
-                            }
-                        }
-                        "-1" => { cmd.push_str(" -1"); }
-                        "-N" => { cmd.push_str(" -N"); }
-                        "-W" => { cmd.push_str(" -W"); }
-                        "-T" => {
-                            if let Some(t) = cmd_args.get(i + 1) {
-                                cmd.push_str(&format!(" -T {}", t));
-                                i += 1;
-                            }
-                        }
-                        "-t" => {
-                            if let Some(t) = cmd_args.get(i + 1) {
-                                cmd.push_str(&format!(" -t {}", t));
-                                i += 1;
-                            }
-                        }
-                        _ => {}
                     }
-                    i += 1;
                 }
-                cmd.push('\n');
-                send_control(cmd)?;
+                let line = format!(
+                    "command-prompt {}\n",
+                    rest.iter().map(|a| crate::util::quote_arg_if_needed(a)).collect::<Vec<_>>().join(" ")
+                );
+                // Without -b the command waits until the prompt closes, as
+                // tmux's does, however long that takes.
+                let resp = if spec.background {
+                    send_control_with_response(line)?
+                } else {
+                    crate::session::send_control_with_response_wait(line)?
+                };
+                if let Some(msg) = resp.trim_start().strip_prefix("ERROR: ") {
+                    eprintln!("psmux: {}", msg.trim_end());
+                    std::process::exit(1);
+                }
                 return Ok(());
             }
             // display-menu - Display a menu

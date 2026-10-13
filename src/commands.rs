@@ -2210,6 +2210,21 @@ fn execute_command_string_single(app: &mut AppState, cmd: &str) -> io::Result<()
             crate::copy_prompt::open(app, args);
         }
         "command-prompt" => {
+            // A hook or a binding the server runs: the prompt opens on an
+            // attached client, which draws it and runs it the way a prefix
+            // binding's prompt runs (#789 follow up). The server's own prompt
+            // below is drawn by no client, so it is only the fallback for a
+            // server with nobody attached.
+            let trimmed = cmd.trim_start();
+            let args = trimmed.strip_prefix(parts[0]).unwrap_or("");
+            match crate::server::helpers::request_client_prompt(app, args) {
+                Ok(_) => return Ok(()),
+                Err(e) if e != "no current client" => {
+                    app.status_message = Some((e, std::time::Instant::now(), None));
+                    return Ok(());
+                }
+                Err(_) => {}
+            }
             // Support -I initial_text, -p prompt (ignored), -1 (ignored)
             let initial = parts.windows(2).find(|w| w[0] == "-I").map(|w| w[1].to_string()).unwrap_or_default();
             app.command_vi_normal = false;

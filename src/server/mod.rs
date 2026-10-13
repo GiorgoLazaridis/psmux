@@ -224,6 +224,15 @@ fn serialize_overlay_json(app: &AppState) -> String {
             }
         }
     }
+    // A command line `command-prompt` waiting for its client (#789 follow up).
+    // It stays in every frame until the client reports it closed; the client
+    // opens each id once.
+    if let Some(req) = app.prompt_request.as_ref() {
+        if let Ok(json) = serde_json::to_string(req) {
+            out.push_str(",\"prompt_request\":");
+            out.push_str(&json);
+        }
+    }
     out
 }
 
@@ -7792,8 +7801,25 @@ pub fn run_server(session_name: String, socket_name: Option<String>, initial_com
                     }
                     hook_event = Some("pane-focus-out");
                 }
-                CtrlReq::CommandPrompt(initial) => {
-                    app.mode = Mode::CommandPrompt { input: initial.clone(), cursor: initial.len() };
+                CtrlReq::CommandPrompt(args, wait, resp) => {
+                    // Opened on an attached client, which gets it in its next
+                    // state frame (#789 follow up). It used to open a prompt in
+                    // the server that no client drew, with only -I kept.
+                    match helpers::request_client_prompt(&mut app, &args) {
+                        Ok(helpers::PromptRequestOutcome::Queued(id)) => {
+                            if wait {
+                                app.prompt_waiters.push((id, resp));
+                            } else {
+                                let _ = resp.send(String::new());
+                            }
+                            state_dirty = true;
+                        }
+                        Ok(helpers::PromptRequestOutcome::Ignored) => { let _ = resp.send(String::new()); }
+                        Err(e) => { let _ = resp.send(format!("ERROR: {}", e)); }
+                    }
+                }
+                CtrlReq::PromptDone(id) => {
+                    app.finish_prompt_request(id);
                     state_dirty = true;
                 }
                 CtrlReq::ShowMessages(resp) => {

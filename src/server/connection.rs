@@ -1905,7 +1905,10 @@ if control_echo || control_noecho {
             | "break-pane" | "breakp"
             | "link-window" | "linkw" | "unlink-window" | "unlinkw"
             | "switch-client" | "switchc" | "resize-window" | "resizew"
-            | "kill-window" | "killw" | "detach-client" | "detach");
+            | "kill-window" | "killw" | "detach-client" | "detach"
+            // command-prompt's -t is a target CLIENT (cmd-command-prompt.c:84),
+            // resolved by its own arm (#789 follow up).
+            | "command-prompt");
         // capture-pane -t %N resolves the pane id inside the capture itself;
         // swap-pane resolves its own target and swaps it with the *current*
         // active pane (temp-focusing the target would make active == target
@@ -2425,7 +2428,10 @@ let skip_target_focus = matches!(cmd, "join-pane" | "joinp" | "move-pane" | "mov
     | "break-pane" | "breakp"
     | "link-window" | "linkw" | "unlink-window" | "unlinkw"
     | "switch-client" | "switchc" | "resize-window" | "resizew"
-    | "kill-window" | "killw" | "detach-client" | "detach");
+    | "kill-window" | "killw" | "detach-client" | "detach"
+            // command-prompt's -t is a target CLIENT (cmd-command-prompt.c:84),
+            // resolved by its own arm (#789 follow up).
+            | "command-prompt");
 let targeted_kill_pane_id = if matches!(cmd, "kill-pane" | "killp") && pane_is_id {
     target_pane
 } else {
@@ -5300,8 +5306,33 @@ match cmd {
         if !persistent && pending_chain.is_empty() { break; }
     }
     "command-prompt" => {
-        let initial = args.windows(2).find(|w| w[0] == "-I").map(|w| w[1].to_string()).unwrap_or_default();
-        let _ = tx.send(CtrlReq::CommandPrompt(initial));
+        // Opened on an attached client (#789 follow up). Without -b the
+        // command line waits until the prompt closes, as tmux's does
+        // (cmd-command-prompt.c:174 returns CMD_RETURN_WAIT). A client's own
+        // persistent connection never waits: that client reports the prompt
+        // closed over this same connection.
+        let mut line = args.iter().map(|a| crate::util::quote_arg_if_needed(a)).collect::<Vec<_>>().join(" ");
+        // The outer -t was lifted off by the target scan above; it names the
+        // client the prompt opens on, so it goes back in front.
+        if let Some(t) = raw_target.as_deref() {
+            line = format!("-t {} {}", crate::util::quote_arg_if_needed(t), line);
+        }
+        let background = crate::client::parse_command_prompt_args(&line).background;
+        let wait = !persistent && !background;
+        let (rtx, rrx) = mpsc::channel::<String>();
+        let _ = tx.send(CtrlReq::CommandPrompt(line, wait, rtx));
+        if let Ok(reply) = rrx.recv() {
+            if !persistent && !reply.is_empty() {
+                let _ = writeln!(write_stream, "{}", reply);
+                let _ = write_stream.flush();
+            }
+        }
+        if !persistent && pending_chain.is_empty() { break; }
+    }
+    "prompt-done" => {
+        if let Some(id) = args.first().and_then(|s| s.parse::<u64>().ok()) {
+            let _ = tx.send(CtrlReq::PromptDone(id));
+        }
     }
     "run-shell" | "run" => {
         // Only strip run-shell's OWN "-b" flag. A blind `!a.starts_with('-')`

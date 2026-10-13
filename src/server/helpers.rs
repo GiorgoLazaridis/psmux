@@ -509,6 +509,11 @@ pub(crate) fn combined_data_version(app: &AppState) -> u64 {
     // switch from no change at all. Mixed into a distinct field so it cannot
     // cancel against a pane counter.
     v = v.wrapping_add((app.active_idx as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15));
+    // A command prompt request opening or closing is a new frame for the
+    // client it targets (#789 follow up), whichever route queued it: a hook
+    // queues one with no request handler around it to mark the state dirty.
+    let prompt_term = app.prompt_request.as_ref().map_or(0u64, |r| r.id.wrapping_add(1));
+    v = v.wrapping_add(prompt_term.wrapping_mul(0xC2B2_AE3D_27D4_EB4F));
     // Include per-window status flags so non-active windows changing their
     // bell/activity/silence state forces a frame emission. Without this, the
     // status bar shows the bell or activity indicator only after some
@@ -1223,3 +1228,108 @@ mod tests_issue759_session_name_frame;
 #[cfg(test)]
 #[path = "../../tests-rs/test_issue658_rename_walk_activity_gate.rs"]
 mod tests_issue658_rename_walk_activity_gate;
+
+
+/// What [`request_client_prompt`] did with a `command-prompt` request.
+#[derive(Debug, PartialEq, Eq)]
+pub enum PromptRequestOutcome {
+    /// The request is queued for a client under this id.
+    Queued(u64),
+    /// That client already has a prompt request open, so this one is dropped,
+    /// as tmux drops a prompt for a client that has one (`tc->prompt_string
+    /// != NULL`, cmd-command-prompt.c:100).
+    Ignored,
+}
+
+/// The client a prompt opens on when `-t` names none: the most recently
+/// active attached client that can draw one (tmux's best client,
+/// cmd-find.c `cmd_find_best_client`). Control mode clients have no screen.
+pub fn best_prompt_client(app: &AppState) -> Option<u64> {
+    app.client_registry
+        .values()
+        .filter(|ci| !ci.is_control)
+        .max_by_key(|ci| (ci.last_activity, ci.id))
+        .map(|ci| ci.id)
+}
+
+/// `command-prompt <args>` run anywhere but a client's own key binding: from
+/// the command line, a hook, or a binding the server runs. The prompt opens on
+/// an attached client (tmux status_prompt_set on the target client), which
+/// receives it in its state frame as `prompt_request` and opens it with the
+/// same parse and the same editor a prefix binding's prompt has (#789 follow
+/// up). Before this, the command line kept only `-I` and opened a prompt in
+/// the server that no client drew.
+///
+/// `args` is everything after `command-prompt`. Formats in `-I` and in the
+/// labels are expanded here, where the session's values are; the template is
+/// expanded only with `-F`, as tmux does.
+pub fn request_client_prompt(app: &mut AppState, args: &str) -> Result<PromptRequestOutcome, String> {
+    let spec = crate::client::parse_command_prompt_args(args);
+    // tmux's prompt types (status.c:52); anything else is refused
+    // (cmd-command-prompt.c:151).
+    if let Some(t) = spec.prompt_type.as_deref() {
+        if !matches!(t, "command" | "search" | "target" | "window-target") {
+            return Err(format!("unknown type: {}", t));
+        }
+    }
+    let client_id = match spec.target.as_deref() {
+        Some(t) => {
+            // `%N` is tmux shorthand for the client on /dev/pts/N.
+            let wanted = match t.strip_prefix('%') {
+                Some(n) if !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()) => format!("/dev/pts/{}", n),
+                _ => t.to_string(),
+            };
+            match crate::format::find_client_by_name(app, &wanted) {
+                Some(id) => id,
+                // Anything that is not a client name named this server's
+                // session: the command line routed here by it already.
+                None if !wanted.starts_with('/') => {
+                    best_prompt_client(app).ok_or_else(|| "no current client".to_string())?
+                }
+                None => return Err(format!("can't find client: {}", t)),
+            }
+        }
+        None => best_prompt_client(app).ok_or_else(|| "no current client".to_string())?,
+    };
+    if app.prompt_request.as_ref().is_some_and(|r| r.client_id == client_id) {
+        return Ok(PromptRequestOutcome::Ignored);
+    }
+    let expand = |s: &str| if s.contains('#') { crate::format::expand_format(s, app) } else { s.to_string() };
+    let prompts: Vec<(Option<String>, String)> = spec
+        .prompts()
+        .into_iter()
+        .map(|(label, initial)| (label.map(|l| expand(&l)), expand(&initial)))
+        .collect();
+    // Untimed: `%%` is the placeholder here, and a strftime pass would turn
+    // it into `%` before any answer is put in (tmux keeps it: `-F
+    // '#{session_name}-%%'` answered q gives `<session>-q`).
+    let template = if spec.format {
+        spec.template.as_deref().map(|t| crate::format::expand_format_untimed(t, app))
+    } else {
+        spec.template.clone()
+    };
+    let pid = app.client_registry.get(&client_id).map_or(0, |ci| ci.pid);
+    app.prompt_request_seq += 1;
+    let id = app.prompt_request_seq;
+    // The same precedence the copy mode prompt and tmux use: -1 over -N over
+    // -k (cmd-command-prompt.c:157 to :166).
+    let single = spec.single;
+    let numeric = !single && spec.numeric;
+    let key = !single && !numeric && spec.key;
+    app.prompt_request = Some(crate::types::PromptRequest {
+        id,
+        pid,
+        client_id,
+        prompts,
+        template,
+        key,
+        single,
+        numeric,
+        search: spec.search,
+    });
+    Ok(PromptRequestOutcome::Queued(id))
+}
+
+#[cfg(test)]
+#[path = "../../tests-rs/test_cli_command_prompt_client.rs"]
+mod test_cli_command_prompt_client;
