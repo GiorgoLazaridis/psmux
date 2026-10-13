@@ -28,6 +28,31 @@
   !define REPO_DIR ".."
 !endif
 
+; ── Uninstaller signing (optional) ───────────────────────────────────────
+; WriteUninstaller emits uninstall.exe from inside makensis, so it cannot be
+; signed after the build. !uninstfinalize (NSIS 3.08+) runs a command on the
+; uninstaller before it is packed; %1 is the uninstaller's path.
+;
+;   SIGNTOOL + SIGN_THUMBPRINT  signtool.exe path and certificate SHA1; the
+;                               release workflow passes these after the
+;                               Certum login. Nothing here needs quoting on
+;                               the makensis command line.
+;   SIGN_CMD                    any full command containing "%1", for other
+;                               signers or for testing the hook locally.
+;
+; With none of them defined the installer builds unsigned, as before.
+!ifdef SIGNTOOL & SIGN_THUMBPRINT
+  !ifndef SIGN_CMD
+    !define SIGN_CMD '"${SIGNTOOL}" sign /sha1 ${SIGN_THUMBPRINT} /tr http://time.certum.pl /td SHA256 /fd SHA256 /d "psmux" "%1"'
+  !endif
+!endif
+!ifdef SIGN_CMD
+  !uninstfinalize '${SIGN_CMD}' = 0
+  !ifdef SIGNTOOL
+    !uninstfinalize '"${SIGNTOOL}" verify /pa /q "%1"' = 0
+  !endif
+!endif
+
 ; ── General ──────────────────────────────────────────────────────────────
 Name "psmux ${VERSION}"
 OutFile "${REPO_DIR}\target\installer\psmux-v${VERSION}-${ARCH}-setup.exe"

@@ -170,19 +170,35 @@ jobs:
 
       - name: Build NSIS installer
         shell: pwsh
+        env:
+          SIGNTOOL: ${{ steps.certum.outcome == 'success' && steps.certum.outputs.signtool-path || '' }}
+          SIGN_THUMBPRINT: ${{ steps.certum.outcome == 'success' && steps.certum.outputs.cert-thumbprint || '' }}
         run: |
           $ErrorActionPreference = "Stop"
           $version = "${{ inputs.tag }}" -replace '^v', ''
           $releaseDir = Resolve-Path "target/${{ matrix.target }}/release"
           $repoDir = Resolve-Path "."
           New-Item -ItemType Directory -Path "target\installer" -Force | Out-Null
+          $makensis = "C:\Program Files (x86)\NSIS\makensis.exe"
 
-          & "C:\Program Files (x86)\NSIS\makensis.exe" /NOCD `
-            /DVERSION=$version `
-            /DARCH=${{ matrix.nsis_arch }} `
-            "/DSOURCE_DIR=$releaseDir" `
-            "/DREPO_DIR=$repoDir" `
-            "installer\psmux.nsi"
+          $nsisArgs = @(
+            "/NOCD",
+            "/DVERSION=$version",
+            "/DARCH=${{ matrix.nsis_arch }}",
+            "/DSOURCE_DIR=$releaseDir",
+            "/DREPO_DIR=$repoDir"
+          )
+          # Signed builds also sign uninstall.exe, which makensis writes
+          # itself (installer\psmux.nsi, !uninstfinalize, NSIS 3.08+).
+          if ($env:SIGNTOOL) {
+            $nsisVersion = (& $makensis /VERSION) -replace '^v', ''
+            if ([version]($nsisVersion -replace '[^0-9.].*$', '') -lt [version]"3.08") {
+              throw "NSIS $nsisVersion cannot sign the uninstaller; 3.08 or newer is required"
+            }
+            $nsisArgs += "/DSIGNTOOL=$env:SIGNTOOL"
+            $nsisArgs += "/DSIGN_THUMBPRINT=$env:SIGN_THUMBPRINT"
+          }
+          & $makensis @nsisArgs "installer\psmux.nsi"
           if ($LASTEXITCODE -ne 0) { Write-Error "NSIS build failed"; exit 1 }
 
           $setup = "target\installer\psmux-v${version}-${{ matrix.nsis_arch }}-setup.exe"
