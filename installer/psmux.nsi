@@ -27,6 +27,11 @@
 !ifndef REPO_DIR
   !define REPO_DIR ".."
 !endif
+; VIProductVersion must be numeric X.Y.Z.W, so a prerelease VERSION such as
+; 3.4.0-signtest passes its numeric part as VI_VERSION.
+!ifndef VI_VERSION
+  !define VI_VERSION "${VERSION}"
+!endif
 
 ; ── Uninstaller signing (optional) ───────────────────────────────────────
 ; WriteUninstaller emits uninstall.exe from inside makensis, so it cannot be
@@ -63,7 +68,7 @@ SetCompressor /SOLID lzma
 Unicode True
 
 ; ── Version info embedded in the .exe ────────────────────────────────────
-VIProductVersion "${VERSION}.0"
+VIProductVersion "${VI_VERSION}.0"
 VIAddVersionKey "ProductName" "psmux"
 VIAddVersionKey "ProductVersion" "${VERSION}"
 VIAddVersionKey "FileDescription" "psmux - Terminal Multiplexer for Windows"

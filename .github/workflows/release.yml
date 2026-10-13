@@ -4,9 +4,14 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Release tag to publish (e.g. v3.3.3) — tag must already exist in the repo'
+        description: 'Release tag to publish (e.g. v3.3.3). Dispatch FROM this tag (--ref), it must already be pushed'
         required: true
         type: string
+      dry_run:
+        description: 'Build, sign and verify only (upload artifacts); skip the GitHub release and every publish job. Allows a vX.Y.Z-signtest tag'
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -28,6 +33,14 @@ jobs:
   # signing only happens when github.ref is the tag. Dispatched from a branch
   # the build would skip the Certum login, the signing steps and the
   # signature check, and ship unsigned files. Preflight refuses that run.
+  #
+  # Signing rehearsal, nothing released or published:
+  #
+  #   git tag v3.4.0-signtest && git push origin v3.4.0-signtest
+  #   gh workflow run release.yml --ref v3.4.0-signtest -f tag=v3.4.0-signtest -f dry_run=true
+  #
+  # A hyphenated tag is accepted only with dry_run, and only if it contains
+  # -signtest; a real release tag must equal v + the Cargo.toml version.
   preflight:
     name: Preflight
     runs-on: ubuntu-latest
@@ -40,6 +53,7 @@ jobs:
           REF_TYPE: ${{ github.ref_type }}
           REF_NAME: ${{ github.ref_name }}
           TAG: ${{ inputs.tag }}
+          DRY_RUN: ${{ inputs.dry_run }}
         run: |
           fail=0
           if [ "$REF_TYPE" != "tag" ]; then
@@ -49,21 +63,43 @@ jobs:
             echo "::error::Dispatched from tag '$REF_NAME' but the tag input is '$TAG'. They must be the same tag."
             fail=1
           fi
+          case "$TAG" in
+            v*) ;;
+            *) echo "::error::Tag '$TAG' does not start with v; the windows-signing environment only deploys for tag v* refs."; fail=1 ;;
+          esac
+          check_version=1
+          case "$TAG" in
+            *-signtest*)
+              if [ "$DRY_RUN" = "true" ]; then
+                echo "Rehearsal tag '$TAG' with dry_run: Cargo.toml version check skipped."
+                check_version=0
+              else
+                echo "::error::'$TAG' is a rehearsal tag. Run it with -f dry_run=true; it can never be released."
+                fail=1; check_version=0
+              fi
+              ;;
+            *-*)
+              echo "::error::Tag '$TAG' contains a hyphen. Release tags are vX.Y.Z; a signing rehearsal uses vX.Y.Z-signtest with dry_run=true."
+              fail=1; check_version=0
+              ;;
+          esac
           crate_version=$(awk '/^\[package\]/{p=1;next} /^\[/{p=0} p && /^version[[:space:]]*=/{gsub(/^[^"]*"|".*$/,""); print; exit}' Cargo.toml)
-          if [ "v$crate_version" != "$TAG" ]; then
+          if [ "$check_version" -eq 1 ] && [ "v$crate_version" != "$TAG" ]; then
             echo "::error::Cargo.toml package version is '$crate_version' but the tag is '$TAG'. Bump Cargo.toml to ${TAG#v} or fix the tag."
             fail=1
           fi
           if [ "$fail" -ne 0 ]; then exit 1; fi
-          echo "Preflight OK: ref $REF_TYPE/$REF_NAME, tag $TAG, Cargo.toml $crate_version"
+          echo "Preflight OK: ref $REF_TYPE/$REF_NAME, tag $TAG, Cargo.toml $crate_version, dry_run $DRY_RUN"
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
       # Same check publish-crates runs, here so a sub crate that needs a
       # version bump is caught before anything is built, signed or released.
+      # A dry run publishes nothing, so there it only reports.
       - name: Check sub crates against crates.io
         shell: pwsh
+        continue-on-error: ${{ inputs.dry_run }}
         run: ./scripts/check_subcrate_divergence.ps1
 
   build:
@@ -190,9 +226,12 @@ jobs:
           New-Item -ItemType Directory -Path "target\installer" -Force | Out-Null
           $makensis = "C:\Program Files (x86)\NSIS\makensis.exe"
 
+          # VIProductVersion takes only the numeric part of 3.4.0-signtest.
+          $viVersion = $version -replace '-.*$', ''
           $nsisArgs = @(
             "/NOCD",
             "/DVERSION=$version",
+            "/DVI_VERSION=$viVersion",
             "/DARCH=${{ matrix.nsis_arch }}",
             "/DSOURCE_DIR=$releaseDir",
             "/DREPO_DIR=$repoDir"
@@ -265,6 +304,7 @@ jobs:
   release:
     name: Create Release
     needs: [preflight, build]
+    if: ${{ !inputs.dry_run }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -394,6 +434,7 @@ jobs:
   publish-crates:
     name: Publish to crates.io
     needs: [preflight, release]
+    if: ${{ !inputs.dry_run }}
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v7
@@ -446,6 +487,7 @@ jobs:
   publish-chocolatey:
     name: Publish to Chocolatey
     needs: [preflight, release]
+    if: ${{ !inputs.dry_run }}
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v7
@@ -578,6 +620,7 @@ jobs:
   publish-scoop:
     name: Publish to Scoop Bucket
     needs: [preflight, release]
+    if: ${{ !inputs.dry_run }}
     runs-on: ubuntu-latest
     steps:
       - name: Wait for release assets to stabilize on GitHub CDN
@@ -701,6 +744,7 @@ jobs:
   publish-winget:
     name: Publish to WinGet
     needs: [preflight, release]
+    if: ${{ !inputs.dry_run }}
     runs-on: windows-latest
     steps:
       - name: Wait for release assets to stabilize on GitHub CDN
