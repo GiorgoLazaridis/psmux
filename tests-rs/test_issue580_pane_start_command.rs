@@ -67,9 +67,14 @@ fn issue580_argv_form_keeps_its_marker() {
         start_command_raw_argv(&argv),
         "-- pwsh -NoLogo -File C:\\tools\\hud.ps1"
     );
-    // A word with a space is quoted so the argv boundaries survive.
+    // A word with a space is quoted so the argv boundaries survive. The
+    // stored encoding is internal (#794 made it the exact inverse of
+    // decode_argv), so the contract is the round trip and the rendering.
     let spaced = vec!["pwsh".to_string(), "-File".to_string(), "C:\\my tools\\hud.ps1".to_string()];
-    assert_eq!(start_command_raw_argv(&spaced), "-- pwsh -File \"C:\\my tools\\hud.ps1\"");
+    let stored = start_command_raw_argv(&spaced);
+    let tail = stored.strip_prefix("--").expect("argv form keeps its marker");
+    assert_eq!(crate::pane::decode_argv(tail), spaced);
+    assert_eq!(start_command_display(&stored), "pwsh -File \"C:\\my tools\\hud.ps1\"");
     assert_eq!(start_command_raw_argv(&[]), "");
 }
 
