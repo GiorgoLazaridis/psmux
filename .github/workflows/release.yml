@@ -20,8 +20,46 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # Dispatch this workflow FROM the release tag, never from master:
+  #
+  #   gh workflow run release.yml --ref vX.Y.Z -f tag=vX.Y.Z
+  #
+  # The windows-signing environment has a deployment policy of `tag v*`, so
+  # signing only happens when github.ref is the tag. Dispatched from a branch
+  # the build would skip the Certum login, the signing steps and the
+  # signature check, and ship unsigned files. Preflight refuses that run.
+  preflight:
+    name: Preflight
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Check dispatch ref, tag input and crate version
+        shell: bash
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          fail=0
+          if [ "$REF_TYPE" != "tag" ]; then
+            echo "::error::Dispatched from $REF_TYPE '$REF_NAME'. Dispatch from the tag so the build is signed: gh workflow run release.yml --ref $TAG -f tag=$TAG"
+            fail=1
+          elif [ "$REF_NAME" != "$TAG" ]; then
+            echo "::error::Dispatched from tag '$REF_NAME' but the tag input is '$TAG'. They must be the same tag."
+            fail=1
+          fi
+          crate_version=$(awk '/^\[package\]/{p=1;next} /^\[/{p=0} p && /^version[[:space:]]*=/{gsub(/^[^"]*"|".*$/,""); print; exit}' Cargo.toml)
+          if [ "v$crate_version" != "$TAG" ]; then
+            echo "::error::Cargo.toml package version is '$crate_version' but the tag is '$TAG'. Bump Cargo.toml to ${TAG#v} or fix the tag."
+            fail=1
+          fi
+          if [ "$fail" -ne 0 ]; then exit 1; fi
+          echo "Preflight OK: ref $REF_TYPE/$REF_NAME, tag $TAG, Cargo.toml $crate_version"
+
   build:
     name: Build ${{ matrix.label }}
+    needs: preflight
     runs-on: windows-latest
     # Windows files are signed only when this workflow runs on a release
     # tag. Dispatch it from the tag itself to get a signed build.
@@ -202,7 +240,7 @@ jobs:
 
   release:
     name: Create Release
-    needs: build
+    needs: [preflight, build]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -330,7 +368,7 @@ jobs:
 
   publish-crates:
     name: Publish to crates.io
-    needs: release
+    needs: [preflight, release]
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v7
@@ -377,7 +415,7 @@ jobs:
 
   publish-chocolatey:
     name: Publish to Chocolatey
-    needs: release
+    needs: [preflight, release]
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v7
@@ -509,7 +547,7 @@ jobs:
 
   publish-scoop:
     name: Publish to Scoop Bucket
-    needs: release
+    needs: [preflight, release]
     runs-on: ubuntu-latest
     steps:
       - name: Wait for release assets to stabilize on GitHub CDN
@@ -632,7 +670,7 @@ jobs:
 
   publish-winget:
     name: Publish to WinGet
-    needs: release
+    needs: [preflight, release]
     runs-on: windows-latest
     steps:
       - name: Wait for release assets to stabilize on GitHub CDN
