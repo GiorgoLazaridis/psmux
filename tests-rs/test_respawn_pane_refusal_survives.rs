@@ -254,7 +254,11 @@ fn both_respawn_arms_report_the_error_to_the_requesting_client() {
         ("CtrlReq::RespawnWindow(", "respawn window failed: "),
     ] {
         let at = body.find(arm).unwrap_or_else(|| panic!("{arm} arm not found"));
-        let window = &body[at..(at + 2200).min(body.len())];
+        // The arm runs up to the next `CtrlReq::` arm. A fixed length broke
+        // when the RespawnPane arm grew a floating pane branch (#793).
+        let rest = &body[at + arm.len()..];
+        let end = rest.find("CtrlReq::").map_or(body.len(), |e| at + arm.len() + e);
+        let window = &body[at..end];
         assert!(
             window.contains("resp.send(Err("),
             "{arm} must return its refusal to the originating request"
