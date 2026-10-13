@@ -86,15 +86,30 @@ fn sync_gate_flood_inside_an_open_frame_stays_linear() {
     let t0 = Instant::now();
     assert!(g.feed(B.to_vec(), t0, false).is_empty());
     let chunk = vec![b'x'; 16 * 1024];
-    let start = Instant::now();
+    // Linear means a chunk fed near the cap costs what one fed early costs,
+    // so the last quarter of the flood is timed against the first. A rescan
+    // of everything held makes the last quarter about seven times dearer.
+    // A wall clock budget alone failed on a loaded CI runner (548 ms against
+    // 500 ms, 170 ms on a quiet machine) with no change in the algorithm.
+    let chunks = (SYNC_MAX_HELD / chunk.len()) - 1;
+    let quarter = chunks / 4;
     let mut released = 0usize;
-    for _ in 0..((SYNC_MAX_HELD / chunk.len()) - 1) {
+    let mut first = Duration::ZERO;
+    let mut last = Duration::ZERO;
+    let start = Instant::now();
+    for n in 0..chunks {
+        let s = Instant::now();
         released += g.feed(chunk.clone(), t0, false).len();
+        if n < quarter { first += s.elapsed(); }
+        if n >= chunks - quarter { last += s.elapsed(); }
     }
     let took = start.elapsed();
-    eprintln!("flood of {} bytes held in {:?}, released {}", SYNC_MAX_HELD, took, released);
+    eprintln!("flood of {} bytes held in {:?} (first quarter {:?}, last quarter {:?}), released {}",
+        SYNC_MAX_HELD, took, first, last, released);
     assert_eq!(released, 0, "nothing may be released before the cap");
-    assert!(took < Duration::from_millis(500), "holding a 4 MiB flood took {:?}", took);
+    assert!(last < first * 3 + Duration::from_millis(30),
+        "the last quarter of the flood took {:?} against {:?} for the first: holding is not linear", last, first);
+    assert!(took < Duration::from_secs(5), "holding a 4 MiB flood took {:?}", took);
 }
 
 #[test]

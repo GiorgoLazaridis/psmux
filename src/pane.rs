@@ -3534,7 +3534,11 @@ impl SyncGate {
         self.open = match open_at {
             Some(_) if flush => true,
             Some(at) if data.len() - at <= SYNC_MAX_HELD => {
-                self.held = data.split_off(at);
+                // Keep the buffer itself. `split_off(0)` would hand it back
+                // but allocate an empty one of the same capacity in its place,
+                // so every batch of an open update paid for a block as large
+                // as everything already held: quadratic in the flood.
+                self.held = if at == 0 { std::mem::take(&mut data) } else { data.split_off(at) };
                 true
             }
             _ => false,
