@@ -66,6 +66,11 @@ jobs:
     environment: ${{ github.ref_type == 'tag' && 'windows-signing' || '' }}
     strategy:
       fail-fast: false
+      # One leg at a time: every leg logs in to Certum SimplySign with a TOTP
+      # code from a 30 s window, and two legs logging in inside the same
+      # window can be refused. A sleep based stagger does not prevent that
+      # because the legs finish their builds at different times.
+      max-parallel: 1
       matrix:
         include:
           - target: x86_64-pc-windows-msvc
@@ -91,12 +96,6 @@ jobs:
 
       - name: Build
         run: cargo build --release --target ${{ matrix.target }}
-
-      # Parallel legs sign one at a time.
-      - name: Stagger Certum logins across legs
-        if: runner.os == 'Windows' && github.ref_type == 'tag'
-        shell: pwsh
-        run: Start-Sleep -Seconds (35 * ${{ strategy.job-index }})
 
       # Windows code signing. The action is pinned to a reviewed commit.
       - name: Log in to Certum SimplySign
