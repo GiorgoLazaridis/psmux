@@ -320,10 +320,10 @@ jobs:
           PREV_TAG=$(git tag --list 'v*' --sort=-v:refname | grep -v -- '-' | grep -vxF "$CURRENT_TAG" | head -n 1 || true)
 
           if [ -z "$PREV_TAG" ]; then
-            echo "No previous tag found — generating changelog from all commits"
+            echo "No previous tag found, generating changelog from all commits"
             LOG=$(git log --pretty=format:"- %s (%h)" --no-merges "$CURRENT_TAG")
           else
-            echo "Generating changelog: $PREV_TAG → $CURRENT_TAG"
+            echo "Generating changelog: $PREV_TAG to $CURRENT_TAG"
             LOG=$(git log --pretty=format:"- %s (%h)" --no-merges "${PREV_TAG}..${CURRENT_TAG}")
           fi
 
@@ -342,8 +342,15 @@ jobs:
             echo ""
             echo "Terminal multiplexer for Windows - tmux alternative for PowerShell and Windows Terminal."
             echo ""
+            # Hand written notes (highlights, contributor thanks) for this
+            # tag go above the generated commit list when the file exists.
+            NOTES=".github/release-notes/${CURRENT_TAG}.md"
+            if [ -f "$NOTES" ]; then
+              cat "$NOTES"
+              echo ""
+            fi
             if [ -n "$PREV_TAG" ]; then
-              echo "### Changelog (${PREV_TAG} → ${CURRENT_TAG})"
+              echo "### Changelog (${PREV_TAG} to ${CURRENT_TAG})"
             else
               echo "### Changelog"
             fi
@@ -360,7 +367,7 @@ jobs:
             echo "| Windows x86 (Intel/AMD 32-bit) | \`psmux-${CURRENT_TAG}-windows-x86.zip\` |"
             echo "| Windows ARM64 (Snapdragon/Surface Pro X) | \`psmux-${CURRENT_TAG}-windows-arm64.zip\` |"
             echo ""
-            echo "**Installer (NSIS setup — kills running instances, adds to PATH, warmup):**"
+            echo "**Installer (NSIS setup: kills running instances, adds to PATH, warmup):**"
             echo "| Platform | File |"
             echo "|----------|------|"
             VERSION_NO_V="${CURRENT_TAG#v}"
