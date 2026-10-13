@@ -329,7 +329,7 @@ jobs:
 
           # Write to file to preserve multiline content
           echo "$LOG" > /tmp/changelog.md
-          echo "prev_tag=$PREV_TAG" >> $GITHUB_OUTPUT
+          echo "prev_tag=$PREV_TAG" >> "$GITHUB_OUTPUT"
 
       - name: Build release body
         id: body
@@ -634,8 +634,8 @@ jobs:
         run: |
           tag="${{ inputs.tag }}"
           ver="${tag#v}"
-          echo "VERSION=$ver" >> $GITHUB_OUTPUT
-          echo "TAG=$tag" >> $GITHUB_OUTPUT
+          echo "VERSION=$ver" >> "$GITHUB_OUTPUT"
+          echo "TAG=$tag" >> "$GITHUB_OUTPUT"
 
       - name: Download release zips and compute SHA256
         id: hashes
@@ -655,7 +655,7 @@ jobs:
             done
             hash=$(sha256sum "installer-$arch.zip" | awk '{print $1}')
             upper_arch=$(echo "$arch" | tr '[:lower:]' '[:upper:]' | tr '-' '_')
-            echo "SHA256_$upper_arch=$hash" >> $GITHUB_OUTPUT
+            echo "SHA256_$upper_arch=$hash" >> "$GITHUB_OUTPUT"
             echo "  $arch: $hash"
           done
 
