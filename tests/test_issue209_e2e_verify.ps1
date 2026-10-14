@@ -216,17 +216,18 @@ if ($out -eq "hello world") { Write-Pass "Message is 'hello world', -d consumed 
 elseif ($out -match "5000") { Write-Fail "BUG: -d value '5000' leaked into message: $out" }
 else { Write-Fail "Unexpected output: $out" }
 
-# 5b: -p -I: the -I value must NOT appear in message
-Write-Host "[5b] CLI: display-message -p -I /dev/stdin 'test msg'" -ForegroundColor Yellow
-$out = (& $PSMUX display-message -t $SESSION -p -I "/dev/stdin" "test msg" 2>&1 | Out-String).Trim()
+# 5b: -p -I: -I is a boolean in tmux ("aCc:d:lINpt:F:v", cmd-display-message.c),
+# so it takes no value and the message is the one argument after it.
+Write-Host "[5b] CLI: display-message -p -I 'test msg'" -ForegroundColor Yellow
+$out = (& $PSMUX display-message -t $SESSION -p -I "test msg" 2>&1 | Out-String).Trim()
 Write-Host "     Output: [$out]"
-if ($out -eq "test msg") { Write-Pass "Message is 'test msg', -I consumed correctly" }
-elseif ($out -match "/dev/stdin") { Write-Fail "BUG: -I value leaked into message: $out" }
+if ($out -eq "test msg") { Write-Pass "Message is 'test msg', -I consumed as a flag" }
+elseif ($out -match "-I") { Write-Fail "BUG: -I leaked into message: $out" }
 else { Write-Fail "Unexpected output: $out" }
 
 # 5c: Both -d and -I together
-Write-Host "[5c] CLI: display-message -p -d 1000 -I input 'combo test'" -ForegroundColor Yellow
-$out = (& $PSMUX display-message -t $SESSION -p -d 1000 -I "input" "combo test" 2>&1 | Out-String).Trim()
+Write-Host "[5c] CLI: display-message -p -d 1000 -I 'combo test'" -ForegroundColor Yellow
+$out = (& $PSMUX display-message -t $SESSION -p -d 1000 -I "combo test" 2>&1 | Out-String).Trim()
 Write-Host "     Output: [$out]"
 if ($out -eq "combo test") { Write-Pass "Both -d and -I consumed, message correct" }
 else { Write-Fail "Combined flags failed: $out" }
