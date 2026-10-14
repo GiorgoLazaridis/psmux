@@ -5149,6 +5149,10 @@ match cmd {
                     let mut c = std::process::Command::new(&shell_prog);
                     for a in &shell_args { c.arg(a); }
                     c.arg(condition.as_str());
+                    // Console input injection can detach the server and
+                    // invalidate its stdin handle. Conditions never consume
+                    // pane input; do not inherit that stale console handle.
+                    c.stdin(std::process::Stdio::null());
                     c.stdout(std::process::Stdio::null());
                     c.stderr(std::process::Stdio::null());
                     { use crate::platform::HideWindowCommandExt; c.hide_window(); }
