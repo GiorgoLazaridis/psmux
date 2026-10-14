@@ -328,6 +328,9 @@ fn floating_and_dead_retained_panes_participate_in_attention() {
 fn program_status_option_is_off_by_default_and_the_single_switch() {
     // A stock server: off, listed, and a stock parser treats OSC 7501 as
     // unknown, so the capability query draws no reply and nothing is stored.
+    // This test flips the process wide switch, so it holds it (off) and the
+    // guard restores it whatever happens.
+    let _switch = crate::types::program_status_switch_for_test(false);
     let mut app = app();
     assert!(!app.program_status);
     assert_eq!(crate::server::options::get_option_value(&app, "program-status"), "off");

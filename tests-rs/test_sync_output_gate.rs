@@ -287,6 +287,9 @@ fn parser_thread_answers_queries_before_an_open_update_times_out() {
             std::io::Read::read(&mut self.current, buf)
         }
     }
+    // The reader thread copies the process wide switch into its parser on
+    // every batch, so this test owns the switch (on) for its whole run.
+    let _switch = crate::types::program_status_switch_for_test(true);
     let pane_id = usize::MAX - 7501;
     assert!(crate::types::take_device_replies(pane_id).is_none());
     let (send, receive) = std::sync::mpsc::channel();

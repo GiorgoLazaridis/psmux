@@ -4056,6 +4056,30 @@ pub static PTY_DATA_READY: std::sync::atomic::AtomicBool = std::sync::atomic::At
 /// clear-history all follow the one switch.
 pub static PROGRAM_STATUS_ENABLED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
+/// Tests that need `PROGRAM_STATUS_ENABLED` in a given state hold this for
+/// their whole run: the switch is process wide, and a parallel test flipping
+/// it changes what every live parser thread answers.
+#[cfg(test)]
+pub(crate) fn program_status_switch_for_test(on: bool) -> ProgramStatusSwitchGuard {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let lock = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let previous = PROGRAM_STATUS_ENABLED.swap(on, std::sync::atomic::Ordering::AcqRel);
+    ProgramStatusSwitchGuard { _lock: lock, previous }
+}
+
+#[cfg(test)]
+pub(crate) struct ProgramStatusSwitchGuard {
+    _lock: std::sync::MutexGuard<'static, ()>,
+    previous: bool,
+}
+
+#[cfg(test)]
+impl Drop for ProgramStatusSwitchGuard {
+    fn drop(&mut self) {
+        PROGRAM_STATUS_ENABLED.store(self.previous, std::sync::atomic::Ordering::Release);
+    }
+}
+
 /// Sender for the server loop's control channel, published once at server
 /// start so threads that have no `AppState` can wake the loop.
 ///
