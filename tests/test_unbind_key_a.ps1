@@ -37,7 +37,9 @@ function Cleanup {
 # `unbind-key -a` removed therefore look at the prefix and root tables only.
 function Get-PrefixRootKeyCount {
     $out = & $PSMUX list-keys 2>&1 | Out-String
-    return @($out.Split("`n") | Where-Object { $_ -match '^bind-key\s+(-r\s+)?-T\s+(prefix|root)\s' }).Count
+    # The root table's default mouse keys (MouseDown1Pane, WheelUpPane, ...)
+    # are not in the prefix table either, so tmux keeps them too: left out.
+    return @($out.Split("`n") | Where-Object { $_ -match '^bind-key\s+(-r\s+)?-T\s+(prefix|root)\s' -and $_ -notmatch '^bind-key\s+(-r\s+)?-T\s+root\s+(Mouse|Wheel|DoubleClick|TripleClick)\S*\s' }).Count
 }
 function Get-CopyTableKeyCount {
     $out = & $PSMUX list-keys 2>&1 | Out-String
@@ -315,6 +317,10 @@ if ($linesAfter -eq 0) {
 } else {
     Write-Fail "After: $linesAfter prefix/root bindings remaining"
 }
+Write-Test "unbind-key -a without -T keeps the root table's mouse keys (tmux parity)"
+$rootMouse = @((& $PSMUX list-keys -T root 2>&1 | Out-String).Split("`n") | Where-Object { $_ -match '^bind-key\s+-T\s+root\s+(MouseDown1Pane|WheelUpPane)\s' }).Count
+if ($rootMouse -eq 2) { Write-Pass "MouseDown1Pane and WheelUpPane still bound, as in tmux" }
+else { Write-Fail "root mouse keys lost: found $rootMouse of 2" }
 
 Write-Test "unbind-key -a without -T leaves the copy mode tables (tmux parity)"
 $copyAfter = Get-CopyTableKeyCount

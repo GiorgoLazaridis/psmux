@@ -35,7 +35,9 @@ $NS  = "a780_" + [guid]::NewGuid().ToString('N').Substring(0, 6)
 $SEP = [char]92 + ";"   # a literal \; argv token
 function P { & $PSMUX -L $NS @args 2>&1 | ForEach-Object { "$_" } }
 function Run { $o = P @args; [pscustomobject]@{ Rc = $LASTEXITCODE; Out = (($o) -join "`n").Trim() } }
-function Opt($t, $name) { ((P show-options -v -t $t $name) -join '').Trim() }
+# -q: a user option nothing holds is "invalid option" without it, as in tmux
+# (cmd-show-options.c), and these checks read an unset one as empty.
+function Opt($t, $name) { ((P show-options -qv -t $t $name) -join '').Trim() }
 function Cap($t) { (P capture-pane -t $t -p) -join "`n" }
 
 $defaultBefore = ((& $PSMUX ls 2>&1) -join "`n")

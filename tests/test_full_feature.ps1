@@ -31,7 +31,9 @@ function KeyCount { (& $P list-keys 2>&1 | Out-String).Trim().Split("`n").Where(
 # and list-keys without -T prints every table (tmux 3.4: `unbind -a; list-keys
 # | wc -l` is 175). Counts that measure what `unbind-key -a` removed therefore
 # look at the prefix and root tables only.
-function PrefixRootKeyCount { @((& $P list-keys 2>&1 | Out-String).Split("`n") | Where-Object { $_ -match '^bind-key\s+(-r\s+)?-T\s+(prefix|root)\s' }).Count }
+# The root table's default mouse keys (MouseDown1Pane, WheelUpPane, ...) are
+# not in the prefix table either, so tmux keeps them too: they are left out.
+function PrefixRootKeyCount { @((& $P list-keys 2>&1 | Out-String).Split("`n") | Where-Object { $_ -match '^bind-key\s+(-r\s+)?-T\s+(prefix|root)\s' -and $_ -notmatch '^bind-key\s+(-r\s+)?-T\s+root\s+(Mouse|Wheel|DoubleClick|TripleClick)\S*\s' }).Count }
 function CopyTableKeyCount { @((& $P list-keys 2>&1 | Out-String).Split("`n") | Where-Object { $_ -match '^bind-key\s+(-r\s+)?-T\s+copy-mode(-vi)?\s' }).Count }
 
 function DumpField {

@@ -151,12 +151,20 @@ else { F "expected %error, got: $reply" }
 
 # ============================================================
 Hdr "Layer 3: capture-pane (initial pane content for iTerm2)"
-Send-CC $cc "capture-pane -p -t %0 -e -P -J -S - -E -"
+# iTerm2 names the pane ids list-panes gave it, so ask for the real one: pane
+# ids start at %1 here, and a pane that does not exist is now refused with
+# %error as tmux does, instead of silently capturing the active pane.
+$capPane = ((& $PSMUX display-message -t $S -p '#{pane_id}' 2>&1) -join '').Trim()
+Send-CC $cc "capture-pane -p -t $capPane -e -P -J -S - -E -"
 $reply = Read-Reply $cc 3000
-if ($reply -match "%begin" -and $reply -match "%end") { P "capture-pane wraps in %begin/%end" }
-else { F "capture-pane framing missing" }
+if ($reply -match "%begin" -and $reply -match "%end") { P "capture-pane -t $capPane wraps in %begin/%end" }
+else { F "capture-pane framing missing: $reply" }
 $body = $reply -replace "(?ms)^%begin.*?\n", "" -replace "(?ms)\r?\n%end.*$", ""
 if ($body.Length -gt 0) { P "capture-pane returned non-empty body (len=$($body.Length))" }
+Send-CC $cc "capture-pane -p -t %999"
+$reply = Read-Reply $cc 1500
+if ($reply -match "%error \d+ \d+ 1" -and $reply -match "can't find pane") { P "capture-pane -t on a missing pane answers %error (matches tmux)" }
+else { F "missing pane not refused with %error: $reply" }
 
 # ============================================================
 Hdr "Layer 4: %output streaming for send-keys (the real iTerm2 display path)"
