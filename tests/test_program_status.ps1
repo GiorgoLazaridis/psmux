@@ -1,7 +1,10 @@
 # Run only in a disposable Windows VM/account or CI, never the live user session.
-param([Parameter(Mandatory)][string]$Binary)
+param([string]$Binary)
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $true
+# The runner calls every suite without arguments: fall back to
+# PSMUX_TEST_BIN, then the psmux on PATH, like the other suites.
+if (-not $Binary) { $Binary = if ($env:PSMUX_TEST_BIN) { $env:PSMUX_TEST_BIN } else { (Get-Command psmux -EA Stop).Source } }
 $Binary = (Resolve-Path $Binary).Path
 $namespace = 'osc7501_' + [guid]::NewGuid().ToString('N')
 $session = 'status'
